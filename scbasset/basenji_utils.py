@@ -181,20 +181,15 @@ class StochasticShift(tf.keras.layers.Layer):
         super(StochasticShift, self).__init__()
         self.shift_max = shift_max
         self.augment_shifts = tf.range(-self.shift_max, self.shift_max + 1)
+        assert pad=="uniform" # old kwarg, no longer needed
         self.pad = pad
 
     def call(self, seq_1hot, training=None):
         if training:
-            shift_i = tf.random.uniform(
-                shape=[], minval=0, dtype=tf.int64, maxval=len(self.augment_shifts)
+            shift = tf.random.uniform(
+                shape=[], dtype=tf.int64, minval=-self.shift_max, maxval=self.shift_max+1
             )
-            shift = tf.gather(self.augment_shifts, shift_i)
-            sseq_1hot = tf.cond(
-                tf.not_equal(shift, 0),
-                lambda: shift_sequence(seq_1hot, shift),
-                lambda: seq_1hot,
-            )
-            return sseq_1hot
+            return shift_sequence(seq_1hot, shift, self.shift_max)
         else:
             return seq_1hot
 
@@ -204,34 +199,30 @@ class StochasticShift(tf.keras.layers.Layer):
         return config
 
 
-def shift_sequence(seq, shift, pad_value=0.25):
-    """Shift a sequence left or right by shift_amount.
+def shift_sequence(seq, shift, shift_max, pad_value=0.25):
+    """Shift a sequence left or right by amount 'shift'.
 
     Args:
     seq: [batch_size, seq_length, seq_depth] sequence
-    shift: signed shift value (tf.int32 or int)
-    pad_value: value to fill the padding (primitive or scalar tf.Tensor)
+    shift: signed shift value (tf.intXX or int)
+    shift_max: maximum amount of shift to be expected
     """
     if seq.shape.ndims != 3:
         raise ValueError("input sequence should be rank 3")
-    input_shape = seq.shape
 
-    pad = pad_value * tf.ones_like(seq[:, 0 : tf.abs(shift), :])
-
-    def _shift_right(_seq):
-        # shift is positive
-        sliced_seq = _seq[:, :-shift:, :]
-        return tf.concat([pad, sliced_seq], axis=1)
-
-    def _shift_left(_seq):
-        # shift is negative
-        sliced_seq = _seq[:, -shift:, :]
-        return tf.concat([sliced_seq, pad], axis=1)
-
-    sseq = tf.cond(
-        tf.greater(shift, 0), lambda: _shift_right(seq), lambda: _shift_left(seq)
+    # Pad shift_max bases on both ends
+    padded_seq = tf.pad(
+        seq,
+        paddings=[[0, 0], [shift_max, shift_max], [0, 0]],
+        mode='CONSTANT',
+        constant_values=pad_value
     )
-    sseq.set_shape(input_shape)
+
+    # Roll the padded sequence
+    shifted_seq = tf.roll(padded_seq, shift=-shift, axis=1)
+
+    # Extract the central window of original sequence length
+    sseq = shifted_seq[:, shift_max:(shift_max+seq.shape[1]), :]
 
     return sseq
 
