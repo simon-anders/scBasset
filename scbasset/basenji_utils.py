@@ -175,63 +175,72 @@ class SwitchReverse(tf.keras.layers.Layer):
 
 
 class StochasticShift(tf.keras.layers.Layer):
-    """Stochastically shift a one hot encoded DNA sequence."""
+    """Stochastically shift a one-hot encoded DNA sequence."""
 
-    def __init__(self, shift_max=0, pad="uniform", **kwargs):
-        super(StochasticShift, self).__init__()
+    def __init__(self, shift_max=0, **kwargs):
+        super(StochasticShift, self).__init__(**kwargs)
         self.shift_max = shift_max
+        self.pad_value = 0.25
+        # Generate possible shifts
         self.augment_shifts = tf.range(-self.shift_max, self.shift_max + 1)
-        self.pad = pad
 
     def call(self, seq_1hot, training=None):
         if training:
+            # Randomly select a shift value
             shift_i = tf.random.uniform(
-                shape=[], minval=0, dtype=tf.int64, maxval=len(self.augment_shifts)
+                shape=[], minval=0, maxval=len(self.augment_shifts), dtype=tf.int32
             )
-            shift = tf.gather(self.augment_shifts, shift_i)
-            sseq_1hot = tf.cond(
-                tf.not_equal(shift, 0),
-                lambda: shift_sequence(seq_1hot, shift),
-                lambda: seq_1hot,
-            )
+            shift = self.augment_shifts[shift_i]
+
+            # Shift the sequence
+            sseq_1hot = shift_sequence(seq_1hot, shift, self.shift_max, self.pad_value)
             return sseq_1hot
         else:
             return seq_1hot
 
     def get_config(self):
-        config = super().get_config().copy()
-        config.update({"shift_max": self.shift_max, "pad": self.pad})
+        config = super().get_config()
+        config.update({
+            'shift_max': self.shift_max,
+            #'pad_value': self.pad_value,
+        })
         return config
 
 
-def shift_sequence(seq, shift, pad_value=0.25):
-    """Shift a sequence left or right by shift_amount.
+def shift_sequence(seq, shift, shift_max, pad_value=0.25):
+    """Shift a sequence left or right by shift_amount using tf.roll.
 
     Args:
-    seq: [batch_size, seq_length, seq_depth] sequence
-    shift: signed shift value (tf.int32 or int)
-    pad_value: value to fill the padding (primitive or scalar tf.Tensor)
+        seq: [batch_size, seq_length, seq_depth] sequence
+        shift: signed shift value (tf.int32 or int)
+        shift_max: maximum shift amount (positive integer)
+        pad_value: value to fill the padding (primitive or scalar tf.Tensor)
+    Returns:
+        sseq: shifted sequence with the same shape as seq
     """
-    if seq.shape.ndims != 3:
-        raise ValueError("input sequence should be rank 3")
-    input_shape = seq.shape
+    # Get dynamic shape values
+    batch_size = tf.shape(seq)[0]
+    seq_length = tf.shape(seq)[1]
+    seq_depth = tf.shape(seq)[2]
 
-    pad = pad_value * tf.ones_like(seq[:, 0 : tf.abs(shift), :])
+    # Total padding on both sides
+    total_pad = shift_max * 2
 
-    def _shift_right(_seq):
-        # shift is positive
-        sliced_seq = _seq[:, :-shift:, :]
-        return tf.concat([pad, sliced_seq], axis=1)
-
-    def _shift_left(_seq):
-        # shift is negative
-        sliced_seq = _seq[:, -shift:, :]
-        return tf.concat([sliced_seq, pad], axis=1)
-
-    sseq = tf.cond(
-        tf.greater(shift, 0), lambda: _shift_right(seq), lambda: _shift_left(seq)
+    # Pad the sequence on both sides
+    padded_seq = tf.pad(
+        seq,
+        paddings=[[0, 0], [shift_max, shift_max], [0, 0]],
+        mode='CONSTANT',
+        constant_values=pad_value
     )
-    sseq.set_shape(input_shape)
+
+    # Shift the padded sequence
+    shifted_seq = tf.roll(padded_seq, shift=-shift, axis=1)
+
+    # Extract the central window of original sequence length
+    start = shift_max
+    end = shift_max + seq_length
+    sseq = shifted_seq[:, start:end, :]
 
     return sseq
 
